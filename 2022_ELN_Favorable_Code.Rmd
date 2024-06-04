@@ -1,0 +1,210 @@
+---
+title: "2022 ELN Favorable AML in Patients <60"
+author: "Kellie J. Archer"
+date: "2024-06-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+rm(list=ls())
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r data, echo = FALSE, include=FALSE}
+library(openxlsx)
+library(SummarizedExperiment) # For storing combined object
+library(DESeq2)      # For differential expression
+library(rtracklayer) # For annotation data
+library(plyranges)   # Extract from GRanges object
+library(limma)       # For Venn Diagram
+library(tableone)    # For Table 1
+library(preprocessCore) # For quantile normalization
+library(qqman) #For Manhattan plots     
+library(dplyr) # For ggplot2
+library(ggplot2) # For Manhattan plots
+library(Cairo) #For saving Manhattan plots
+library(knitr) # For kable presentation of tables
+library(glmnet) # For survival modeling
+library(survival) # For survival modeling
+library(ggsurvfit)
+library(labelled)
+library(hdcuremodels)
+
+load("ELN_Fav_Innovation_Results.RData")
+
+## RFS Kaplan-Meier Estimate for training set
+var_label(pData(eset.fav)$DUCRYR) <- "Years since CR"
+var_label(pData(eset.fav.filter)$DUCRYR) <- "Years since CR"
+rfs <- ggsurvfit::survfit2(Surv(DUCRYR, DUCRGRP)~1, data=pData(eset.fav.filter))
+rfs |> ggsurvfit(linewidth = 1) + add_risktable() + scale_ggsurvfit() + labs(y = expression(hat(S)[RFS](t)), xlab = "Time (years)") + ggeasy::easy_move_legend("top") + add_censor_mark()  + theme(legend.position.inside=c(.65, .70), panel.grid.major = element_blank(), panel.grid.minor = element_blank()) 
+
+# Estimate the cured fraction
+round(cure_estimate(rfs)*100,1) # cured fraction estimate
+100-round(cure_estimate(rfs)*100,1) # susceptible estimate
+
+# Test the null hypothesis that the the cured fraction = 0 against the alternative that the cured fraction > 0
+nonzerocure_test(rfs, Reps=10000, seed=26, plot=FALSE)
+
+# Test the null hypothesis that the follow-up is insufficient against the alternative that the follow-up is sufficient
+sufficient_fu_test(rfs)
+
+# Model fitting Weibull
+# WARNING: Time difference was 11.25776 hours so object was saved to workspace
+start<-Sys.time()
+weibull.gmifs<-curegmifs(Surv(cryr, relapse.death)~., data=alliance.frame, x.latency=alliance.frame, model="weibull", scale = TRUE, verbose=TRUE, maxit = 20000)
+end<-Sys.time()
+difftime(end, start)
+
+# https://www.mathworks.com/help/econ/information-criteria.html use cAIC when n/p<40
+summary(weibull.gmifs)
+# [1] 11838 is cAIC step
+cAIC <- 11838
+# Training set predictions
+phat.train<-predict(weibull.gmifs, model.select = "cAIC")
+phat.train$p.group<-ifelse(phat.train$p.uncured<.5,0,1)
+
+pData(eset.fav.filter)$p.group<-factor(phat.train$p.group, labels = c("Cured", "Susceptible"))
+
+# Kaplan-Meier plot for the training set: cured versus susceptible
+sf2.alliance <- ggsurvfit::survfit2(Surv(DUCRYR, DUCRGRP)~p.group, data=pData(eset.fav.filter))
+sf2.alliance |> ggsurvfit(linewidth = 1) + add_risktable() + scale_ggsurvfit() + labs(y = "RFS") + ggeasy::easy_move_legend("top") + add_censor_mark()  + theme(legend.position=c(.65, .70), panel.grid.major = element_blank(), panel.grid.minor = element_blank()) 
+
+# Kaplan-Meier plot for the training set: lower vs higher risk among susceptibles
+pData(eset.fav.filter)$latency.risk<-factor(phat.train$latency.risk, labels = c("Susceptible High Risk", "Susceptible Low Risk"))
+
+sf3.alliance <- ggsurvfit::survfit2(Surv(DUCRYR, DUCRGRP)~latency.risk, data=pData(eset.fav), subset=p.group=="Susceptible")
+sf3.alliance |> ggsurvfit(linewidth = 1) + add_risktable() + scale_ggsurvfit() + labs(y = "RFS") + ggeasy::easy_move_legend("top") + add_censor_mark()  + theme(legend.position=c(.65, .70), panel.grid.major = element_blank(), panel.grid.minor = element_blank()) 
+
+# AUC and C-statistic for training data
+AUC(weibull.gmifs, cure_cutoff=5, model.select="cAIC")
+concordance_mcm(weibull.gmifs, cure_cutoff=5, model.select="cAIC")
+
+# Identify non-zero coefficients in the training set incidence and latency portions of the model
+weibull.coef <- coef(weibull.gmifs, model.select = "cAIC")
+select.inc.train<-weibull.coef$beta_inc
+select.lat.train<-weibull.coef$beta_lat
+select.inc.train<-select.inc.train[select.inc.train!=0]
+length(select.inc.train) # Incidence 
+select.lat.train<-select.lat[select.lat.train!=0]
+length(select.lat.train) #Latency
+
+# Comparison to a penalized Cox PH model (in Supplementary Materials)
+# First, set the random seed for reproducibility of the CV procedure
+set.seed(16)
+cvfit <- cv.glmnet(x=as.matrix(alliance.frame[,-(1:2)]), y=Surv(alliance.frame$cryr, alliance.frame$relapse.death), family = "cox", type.measure = "C")
+plot(cvfit)
+cvfit$lambda.min
+cox.min <- glmnet(x=as.matrix(alliance.frame[,-(1:2)]), y=Surv(alliance.frame$cryr, alliance.frame$relapse.death), family="cox", lambda=cvfit$lambda.min) 
+coef(cox.min)[coef(cox.min)!=0] #38 non-zero coef
+linear.min <- predict(cox.min, newx=as.matrix(alliance.frame[,-(1:2)]))
+group.min<-as.factor(ifelse(linear.min<0,"Cox lower risk","Cox higher risk"))
+sf3.coxmin <- ggsurvfit::survfit2(Surv(cryr, relapse.death)~group.min, data=alliance.frame)
+sf3.coxmin |> ggsurvfit(linewidth = 1) + add_risktable() + scale_ggsurvfit() + labs(y = "RFS") + ggeasy::easy_move_legend("top") + add_censor_mark()  + theme(legend.position=c(.60, .85), panel.grid.major = element_blank(), panel.grid.minor = element_blank()) 
+
+cox.predict <- -predict(cox.min, newx=as.matrix(alliance.frame[,-(1:2)]))
+concordance(Surv(alliance.frame$cryr, alliance.frame$relapse.death) ~ cox.predict)
+
+# Compare demographics for training set among cured, susceptible lower risk, susceptible higher risk
+pData(eset.fav.filter)$p.group<-phat.train$p.group
+pData(eset.fav.filter)$latency.risk<-phat.train$latency.risk
+pData(eset.fav.filter)$mcm.strata <- factor(ifelse(pData(eset.fav.filter)$p.group==0,"cured",pData(eset.fav.filter)$latency.risk), levels=c("cured","low risk", "high risk"), ordered=TRUE)
+variables <- names(pData(eset.fav.filter))[c(2,3,115:120,5:106)]
+categorical <- names(pData(eset.fav.filter))[c(2,5:106)]
+table2 <- CreateTableOne(vars=variables, factorVars=categorical, data=pData(eset.fav.filter), strata="mcm.strata") %>% print(showAllLevels=TRUE, exact=categorical, nonnormal=variables[!(variables %in% categorical)])
+
+# Replace IQR with min-max for continuous variables
+summary(pData(eset.fav.filter)$AGE[pData(eset.fav.filter)$mcm.strata=="cured"])
+summary(pData(eset.fav.filter)$Hemoglobin[pData(eset.fav.filter)$mcm.strata=="cured"])
+summary(pData(eset.fav.filter)$Platelets[pData(eset.fav.filter)$mcm.strata=="cured"])
+summary(pData(eset.fav.filter)$WBC[pData(eset.fav.filter)$mcm.strata=="cured"])
+summary(pData(eset.fav.filter)$BM_blasts[pData(eset.fav.filter)$mcm.strata=="cured"])
+summary(pData(eset.fav.filter)$PB_blasts[pData(eset.fav.filter)$mcm.strata=="cured"])
+
+summary(pData(eset.fav.filter)$AGE[pData(eset.fav.filter)$mcm.strata=="low risk"])
+summary(pData(eset.fav.filter)$Hemoglobin[pData(eset.fav.filter)$mcm.strata=="low risk"])
+summary(pData(eset.fav.filter)$Platelets[pData(eset.fav.filter)$mcm.strata=="low risk"])
+summary(pData(eset.fav.filter)$WBC[pData(eset.fav.filter)$mcm.strata=="low risk"])
+summary(pData(eset.fav.filter)$BM_blasts[pData(eset.fav.filter)$mcm.strata=="low risk"])
+summary(pData(eset.fav.filter)$PB_blasts[pData(eset.fav.filter)$mcm.strata=="low risk"])
+
+summary(pData(eset.fav.filter)$AGE[pData(eset.fav.filter)$mcm.strata=="high risk"])
+summary(pData(eset.fav.filter)$Hemoglobin[pData(eset.fav.filter)$mcm.strata=="high risk"])
+summary(pData(eset.fav.filter)$Platelets[pData(eset.fav.filter)$mcm.strata=="high risk"])
+summary(pData(eset.fav.filter)$WBC[pData(eset.fav.filter)$mcm.strata=="high risk"])
+summary(pData(eset.fav.filter)$BM_blasts[pData(eset.fav.filter)$mcm.strata=="high risk"])
+summary(pData(eset.fav.filter)$PB_blasts[pData(eset.fav.filter)$mcm.strata=="high risk"])
+
+################################################################################# Test set model and results
+###############################################################################
+
+# Model fitting Weibull: select.inc are probe sets that map to incidence transcripts from the training model; select.lat are probe sets that map to latency transcripts from the training model
+start.test<-Sys.time()
+weibull.gmifs.test<-curegmifs(Surv(cryr, relapse.death) ~ ., data=amlcg.frame[,c("cryr","relapse.death",paste("X",select.inc,sep=""))], x.latency=amlcg.frame[,paste("X",select.lat,sep="")], model="weibull", scale = TRUE, verbose=TRUE, maxit = 12000)
+end.test<-Sys.time()
+difftime(end.test, start.test)
+# Time difference of 2.962745 mins using filtered data
+
+# Test set number of non-zero coefficient estimates using optimal step in solution path from training MCM
+vars.inc <- sum(coef(weibull.gmifs.test, model.select=cAIC)$beta_inc != 0)
+vars.lat <- sum(coef(weibull.gmifs.test, model.select=cAIC)$beta_lat != 0)
+vars.inc  
+vars.lat 
+
+# Test set predictions
+phat.test<-predict(weibull.gmifs.test, model.select = cAIC)
+amlcg.frame$p.group<-factor(ifelse(phat.test$p.uncured<.5,0,1), labels=c("Cured", "Susceptible"))
+amlcg.frame$latency.risk<-factor(phat.test$latency.risk, labels=c("Susceptible High Risk", "Susceptible Low Risk"))
+
+var_label(amlcg.frame$cryr) <- "Years since CR"
+
+# Overall Kaplan-Meier plot for the test set
+sf1 <- ggsurvfit::survfit2(Surv(cryr,relapse.death)~1, data=amlcg.frame)
+sf1 |> ggsurvfit(linewidth = 1) + add_risktable() + scale_ggsurvfit() + labs(y = "RFS") + ggeasy::easy_move_legend("top") + add_censor_mark()  + theme(legend.position=c(.65, .70), panel.grid.major = element_blank(), panel.grid.minor = element_blank()) 
+
+# Kaplan-Meier plot for the test set: cured versus susceptible
+sf2 <- ggsurvfit::survfit2(Surv(cryr,relapse.death)~p.group, data=amlcg.frame)
+sf2 |> ggsurvfit(linewidth = 1) + add_risktable() + scale_ggsurvfit() + labs(y = "RFS") + ggeasy::easy_move_legend("top") + add_censor_mark()  + theme(legend.position=c(.65, .70), panel.grid.major = element_blank(), panel.grid.minor = element_blank()) 
+
+# Kaplan-Meier plot for the test set: among susceptibles, lower vs higher risk
+sf3 <- ggsurvfit::survfit2(Surv(cryr,relapse.death)~latency.risk, data=amlcg.frame, subset=p.group=="Susceptible")
+sf3 |> ggsurvfit(linewidth = 1) + add_risktable() + scale_ggsurvfit() + labs(y = "RFS") + ggeasy::easy_move_legend("top") + add_censor_mark() + theme(legend.position=c(.65, .70), , panel.grid.major = element_blank(), panel.grid.minor = element_blank()) # + add_confidence_interval() + theme_bw()
+
+# Compare demographics for training set among cured, susceptible lower risk, susceptible higher risk 
+pData(amlcg.final)$p.group<-factor(ifelse(phat.test$p.uncured<.5,0,1), labels=c("Cured", "Susceptible"))
+pData(amlcg.final)$latency.risk<-phat.test$latency.risk
+pData(amlcg.final)$mcm.strata <- factor(ifelse(pData(amlcg.final)$p.group=="Cured","Cured",pData(amlcg.final)$latency.risk), levels=c("Cured","low risk", "high risk"), ordered=TRUE)
+
+variables_amlcg<-c("PB_blasts", "BM_blasts", "Sex", "Age", "WBC", "LDH", "Hemoglobin", "Platelets", "MLL_PTD", "DNMT3A_R882C",    "DNMT3A_R882H", "DNMT3A", "NRAS", "SF3B1", "IDH1", "CEBPA", "GATA2", "TET2", "NPM1", "WT1", "PTPN11", "FLT3_TKD", "FLT3_other", "FLT3_ITD", "IDH2", "TP53", "SRSF2", "ASXL1", "RUNX1", "BCOR", "biCEBPA", "CEBPAbzip")
+categorical_amlcg<-c("Sex", "MLL_PTD", "DNMT3A_R882C",    "DNMT3A_R882H", "DNMT3A", "NRAS", "SF3B1", "IDH1", "CEBPA", "GATA2", "TET2", "NPM1", "WT1", "PTPN11", "FLT3_TKD", "FLT3_other", "FLT3_ITD", "IDH2", "TP53", "SRSF2", "ASXL1", "RUNX1", "BCOR", "biCEBPA", "CEBPAbzip")
+variables_amlcg[grep("AGE",variables_amlcg)]<-"Age"
+variables_amlcg[grep("MLLPTD",variables_amlcg)]<-"MLL_PTD"
+variables_amlcg[grep("cebpa_bzip",variables_amlcg)]<-"CEBPA"
+categorical_amlcg[grep("MLLPTD",categorical_amlcg)]<-"MLL_PTD"
+categorical_amlcg[grep("cebpa_bzip",categorical_amlcg)]<-"CEBPA"
+
+table3 <- CreateTableOne(vars=variables_amlcg, factorVars=categorical_amlcg, data=pData(amlcg.final), strata="mcm.strata") %>% print(showAllLevels=TRUE, exact=categorical_amlcg, nonnormal=variables_amlcg[!(variables_amlcg %in% categorical_amlcg)])
+
+# Replace IQR with min - max for continuous variables
+summary(pData(amlcg.final)$Age[pData(amlcg.final)$mcm.strata=="cured"])
+summary(pData(amlcg.final)$Hemoglobin[pData(amlcg.final)$mcm.strata=="cured"])
+summary(pData(amlcg.final)$Platelets[pData(amlcg.final)$mcm.strata=="cured"])
+summary(pData(amlcg.final)$WBC[pData(amlcg.final)$mcm.strata=="cured"])
+summary(pData(amlcg.final)$BM_blasts[pData(amlcg.final)$mcm.strata=="cured"])
+
+summary(pData(amlcg.final)$Age[pData(amlcg.final)$mcm.strata=="low risk"])
+summary(pData(amlcg.final)$Hemoglobin[pData(amlcg.final)$mcm.strata=="low risk"])
+summary(pData(amlcg.final)$Platelets[pData(amlcg.final)$mcm.strata=="low risk"])
+summary(pData(amlcg.final)$WBC[pData(amlcg.final)$mcm.strata=="low risk"])
+summary(pData(amlcg.final)$BM_blasts[pData(amlcg.final)$mcm.strata=="low risk"])
+
+summary(pData(amlcg.final)$Age[pData(amlcg.final)$mcm.strata=="high risk"])
+summary(pData(amlcg.final)$Hemoglobin[pData(amlcg.final)$mcm.strata=="high risk"])
+summary(pData(amlcg.final)$Platelets[pData(amlcg.final)$mcm.strata=="high risk"])
+summary(pData(amlcg.final)$WBC[pData(amlcg.final)$mcm.strata=="high risk"])
+summary(pData(amlcg.final)$BM_blasts[pData(amlcg.final)$mcm.strata=="high risk"])
+
+# AUC and concordance for test set
+AUC(weibull.gmifs.test, cure_cutoff=5, model.select = cAIC)
+weibull.gmifs.test$scale <- FALSE
+AUC(weibull.gmifs.test, cure_cutoff=5, model.select = cAIC)
+concordance_mcm(weibull.gmifs.test, cure_cutoff=5, model.select = cAIC)
