@@ -12,5 +12,5 @@ amlcg.final:  an ExpressionSet that includes the normalized test set gene expres
 amlcg.frame: data.frame that includes the time-to-event outcome (cryr), censoring indicator (relapse.death), and gene expression data filtered to retain probe sets that mapped to transcripts included in the training set mixture cure model\
 select.inc: vector of probe sets that map to transcripts having non-zero coefficient estimates in the training set incidence portion of the model \
 select.lat: vector of probe sets that map to transcripts having non-zero coefficient estimates in the training set incidence portion of the model \
-weibull.gmifs.test: the mixturecure model fit to the test set \
+weibull.gmifs.test: the mixturecure model fit to the test set 
 
