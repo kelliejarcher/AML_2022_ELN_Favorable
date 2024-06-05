@@ -1,9 +1,12 @@
 # 2022_ELN_Favorable_Code.Rmd
 R code for replicating results in Archer et al., "Improving risk stratification for 2022 European LeukemiaNet favorable-risk patients with acute myeloid leukemia"
 
-# hdcuremodels is our R package for fitting high-dimensional mixture cure models
+# hdcuremodels 
+The hdcuremodels R package was used for fitting high-dimensional mixture cure models. A vignette to illustrate usage is included. 
 
-# 2022_ELN_Favorable_Data.RData is the R workspace required by 2022_ELN_Favorable_Code.Rmd and contains the following objects: 
+# 2022_ELN_Favorable_Data.RData 
+
+This is the R workspace required by 2022_ELN_Favorable_Code.Rmd and contains the following objects: 
 
 eset.fav.filter: an ExpressionSet the filtered normalized training set gene expression and phenotypic data \
 alliance.frame:  data.frame that includes the time-to-event outcome (cryr), censoring indicator (relapse.death), and expression for all genes retained after filtering \
