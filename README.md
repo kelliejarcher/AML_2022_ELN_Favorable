@@ -21,3 +21,6 @@ select.inc: vector of probe sets that map to transcripts having non-zero coeffic
 select.lat: vector of probe sets that map to transcripts having non-zero coefficient estimates in the training set incidence portion of the model \
 weibull.gmifs.test: the mixturecure model fit to the test set 
 
+# KJArcher_hdcuremodels_06-13-2024.pdf
+
+These are slides from my presentation at the R/Medicine conference. The illustrative datasets amltrain and amltest include cytogenetically normal AML patients (not ELN Favorable).
