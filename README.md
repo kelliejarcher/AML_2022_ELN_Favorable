@@ -4,6 +4,10 @@ R code for replicating results in Archer et al., "Improving risk stratification 
 # hdcuremodels 
 The hdcuremodels R package was used for fitting high-dimensional mixture cure models. A vignette to illustrate usage is included. 
 
+This package is also available from the Comprehensive R Archive Network at https://cran.r-project.org/web/packages/hdcuremodels/index.html and can be installed in R by issuing
+
+ > install.packages("hdcuremodels")
+
 # 2022_ELN_Favorable_Data.RData 
 
 This is the R workspace required by 2022_ELN_Favorable_Code.Rmd and contains the following objects: 
